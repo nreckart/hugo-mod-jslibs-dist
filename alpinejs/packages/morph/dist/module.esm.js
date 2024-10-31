@@ -26,6 +26,9 @@ function morph(from, toHtml, options) {
       return;
     if (from2.nodeType === 1 && window.Alpine) {
       window.Alpine.cloneNode(from2, to);
+      if (from2._x_teleport && to._x_teleport) {
+        patch(from2._x_teleport, to._x_teleport);
+      }
     }
     if (textOrComment(to)) {
       patchNodeValue(from2, to);
@@ -83,10 +86,6 @@ function morph(from, toHtml, options) {
     }
   }
   function patchChildren(from2, to) {
-    if (from2._x_teleport)
-      from2 = from2._x_teleport;
-    if (to._x_teleport)
-      to = to._x_teleport;
     let fromKeys = keyToMap(from2.children);
     let fromKeyHoldovers = {};
     let currentTo = getFirstNode(to);

@@ -1517,120 +1517,6 @@ function watch(getter, callback) {
   return () => release(effectReference);
 }
 
-// packages/alpinejs/src/utils/dispatch.js
-function dispatch(el, name, detail = {}) {
-  el.dispatchEvent(
-    new CustomEvent(name, {
-      detail,
-      bubbles: true,
-      // Allows events to pass the shadow DOM barrier.
-      composed: true,
-      cancelable: true
-    })
-  );
-}
-
-// packages/alpinejs/src/utils/walk.js
-function walk(el, callback) {
-  if (typeof ShadowRoot === "function" && el instanceof ShadowRoot) {
-    Array.from(el.children).forEach((el2) => walk(el2, callback));
-    return;
-  }
-  let skip = false;
-  callback(el, () => skip = true);
-  if (skip)
-    return;
-  let node = el.firstElementChild;
-  while (node) {
-    walk(node, callback, false);
-    node = node.nextElementSibling;
-  }
-}
-
-// packages/alpinejs/src/utils/warn.js
-function warn(message, ...args) {
-  console.warn(`Alpine Warning: ${message}`, ...args);
-}
-
-// packages/alpinejs/src/lifecycle.js
-var started = false;
-function start() {
-  if (started)
-    warn("Alpine has already been initialized on this page. Calling Alpine.start() more than once can cause problems.");
-  started = true;
-  if (!document.body)
-    warn("Unable to initialize. Trying to load Alpine before `<body>` is available. Did you forget to add `defer` in Alpine's `<script>` tag?");
-  dispatch(document, "alpine:init");
-  dispatch(document, "alpine:initializing");
-  startObservingMutations();
-  onElAdded((el) => initTree(el, walk));
-  onElRemoved((el) => destroyTree(el));
-  onAttributesAdded((el, attrs) => {
-    directives(el, attrs).forEach((handle) => handle());
-  });
-  let outNestedComponents = (el) => !closestRoot(el.parentElement, true);
-  Array.from(document.querySelectorAll(allSelectors().join(","))).filter(outNestedComponents).forEach((el) => {
-    initTree(el);
-  });
-  dispatch(document, "alpine:initialized");
-}
-var rootSelectorCallbacks = [];
-var initSelectorCallbacks = [];
-function rootSelectors() {
-  return rootSelectorCallbacks.map((fn) => fn());
-}
-function allSelectors() {
-  return rootSelectorCallbacks.concat(initSelectorCallbacks).map((fn) => fn());
-}
-function addRootSelector(selectorCallback) {
-  rootSelectorCallbacks.push(selectorCallback);
-}
-function addInitSelector(selectorCallback) {
-  initSelectorCallbacks.push(selectorCallback);
-}
-function closestRoot(el, includeInitSelectors = false) {
-  return findClosest(el, (element) => {
-    const selectors = includeInitSelectors ? allSelectors() : rootSelectors();
-    if (selectors.some((selector) => element.matches(selector)))
-      return true;
-  });
-}
-function findClosest(el, callback) {
-  if (!el)
-    return;
-  if (callback(el))
-    return el;
-  if (el._x_teleportBack)
-    el = el._x_teleportBack;
-  if (!el.parentElement)
-    return;
-  return findClosest(el.parentElement, callback);
-}
-function isRoot(el) {
-  return rootSelectors().some((selector) => el.matches(selector));
-}
-var initInterceptors = [];
-function interceptInit(callback) {
-  initInterceptors.push(callback);
-}
-function initTree(el, walker = walk, intercept = () => {
-}) {
-  deferHandlingDirectives(() => {
-    walker(el, (el2, skip) => {
-      intercept(el2, skip);
-      initInterceptors.forEach((i) => i(el2, skip));
-      directives(el2, el2.attributes).forEach((handle) => handle());
-      el2._x_ignore && skip();
-    });
-  });
-}
-function destroyTree(root, walker = walk) {
-  walker(root, (el) => {
-    cleanupAttributes(el);
-    cleanupElement(el);
-  });
-}
-
 // packages/alpinejs/src/mutation.js
 var onAttributeAddeds = [];
 var onElRemoveds = [];
@@ -1669,10 +1555,10 @@ function cleanupAttributes(el, names) {
   });
 }
 function cleanupElement(el) {
-  if (el._x_cleanups) {
-    while (el._x_cleanups.length)
-      el._x_cleanups.pop()();
-  }
+  var _a, _b;
+  (_a = el._x_effects) == null ? void 0 : _a.forEach(dequeueJob);
+  while ((_b = el._x_cleanups) == null ? void 0 : _b.length)
+    el._x_cleanups.pop()();
 }
 var observer = new MutationObserver(onMutate);
 var currentlyObserving = false;
@@ -1765,7 +1651,6 @@ function onMutate(mutations) {
     if (addedNodes.has(node))
       continue;
     onElRemoveds.forEach((i) => i(node));
-    destroyTree(node);
   }
   addedNodes.forEach((node) => {
     node._x_ignoreSelf = true;
@@ -1846,7 +1731,7 @@ var mergeProxyTrap = {
     ) || objects[objects.length - 1];
     const descriptor = Object.getOwnPropertyDescriptor(target, name);
     if ((descriptor == null ? void 0 : descriptor.set) && (descriptor == null ? void 0 : descriptor.get))
-      return Reflect.set(target, name, value, thisProxy);
+      return descriptor.set.call(thisProxy, value) || true;
     return Reflect.set(target, name, value);
   }
 };
@@ -1859,7 +1744,7 @@ function collapseProxies() {
 }
 
 // packages/alpinejs/src/interceptor.js
-function initInterceptors2(data2) {
+function initInterceptors(data2) {
   let isObject = (val) => typeof val === "object" && !Array.isArray(val) && val !== null;
   let recurse = (obj, basePath = "") => {
     Object.entries(Object.getOwnPropertyDescriptors(obj)).forEach(([key, { value, enumerable }]) => {
@@ -1929,31 +1814,22 @@ function magic(name, callback) {
   magics[name] = callback;
 }
 function injectMagics(obj, el) {
+  let memoizedUtilities = getUtilities(el);
   Object.entries(magics).forEach(([name, callback]) => {
-    let memoizedUtilities = null;
-    function getUtilities() {
-      if (memoizedUtilities) {
-        return memoizedUtilities;
-      } else {
-        let [utilities, cleanup] = getElementBoundUtilities(el);
-        memoizedUtilities = { interceptor, ...utilities };
-        onElRemoved(el, cleanup);
-        return memoizedUtilities;
-      }
-    }
     Object.defineProperty(obj, `$${name}`, {
       get() {
-        return callback(el, getUtilities());
+        return callback(el, memoizedUtilities);
       },
       enumerable: false
     });
   });
-  return {
-    obj,
-    cleanup: () => {
-      el = null;
-    }
-  };
+  return obj;
+}
+function getUtilities(el) {
+  let [utilities, cleanup] = getElementBoundUtilities(el);
+  let utils = { interceptor, ...utilities };
+  onElRemoved(el, cleanup);
+  return utils;
 }
 
 // packages/alpinejs/src/utils/error.js
@@ -2000,8 +1876,7 @@ function setEvaluator(newEvaluator) {
 }
 function normalEvaluator(el, expression) {
   let overriddenMagics = {};
-  let cleanup = injectMagics(overriddenMagics, el).cleanup;
-  onAttributeRemoved(el, "evaluator", cleanup);
+  injectMagics(overriddenMagics, el);
   let dataStack = [overriddenMagics, ...closestDataStack(el)];
   let evaluator = typeof expression === "function" ? generateEvaluatorFromFunction(dataStack, expression) : generateEvaluatorFromString(dataStack, expression, el);
   return tryCatch.bind(null, el, expression, evaluator);
@@ -2096,6 +1971,9 @@ function directive(name, callback) {
       directiveOrder.splice(pos >= 0 ? pos : directiveOrder.indexOf("DEFAULT"), 0, name);
     }
   };
+}
+function directiveExists(name) {
+  return Object.keys(directiveHandlers).includes(name);
 }
 function directives(el, attributes, originalAttributeOverride) {
   attributes = Array.from(attributes);
@@ -2235,6 +2113,140 @@ function byPriority(a, b) {
   let typeA = directiveOrder.indexOf(a.type) === -1 ? DEFAULT : a.type;
   let typeB = directiveOrder.indexOf(b.type) === -1 ? DEFAULT : b.type;
   return directiveOrder.indexOf(typeA) - directiveOrder.indexOf(typeB);
+}
+
+// packages/alpinejs/src/utils/dispatch.js
+function dispatch(el, name, detail = {}) {
+  el.dispatchEvent(
+    new CustomEvent(name, {
+      detail,
+      bubbles: true,
+      // Allows events to pass the shadow DOM barrier.
+      composed: true,
+      cancelable: true
+    })
+  );
+}
+
+// packages/alpinejs/src/utils/walk.js
+function walk(el, callback) {
+  if (typeof ShadowRoot === "function" && el instanceof ShadowRoot) {
+    Array.from(el.children).forEach((el2) => walk(el2, callback));
+    return;
+  }
+  let skip = false;
+  callback(el, () => skip = true);
+  if (skip)
+    return;
+  let node = el.firstElementChild;
+  while (node) {
+    walk(node, callback, false);
+    node = node.nextElementSibling;
+  }
+}
+
+// packages/alpinejs/src/utils/warn.js
+function warn(message, ...args) {
+  console.warn(`Alpine Warning: ${message}`, ...args);
+}
+
+// packages/alpinejs/src/lifecycle.js
+var started = false;
+function start() {
+  if (started)
+    warn("Alpine has already been initialized on this page. Calling Alpine.start() more than once can cause problems.");
+  started = true;
+  if (!document.body)
+    warn("Unable to initialize. Trying to load Alpine before `<body>` is available. Did you forget to add `defer` in Alpine's `<script>` tag?");
+  dispatch(document, "alpine:init");
+  dispatch(document, "alpine:initializing");
+  startObservingMutations();
+  onElAdded((el) => initTree(el, walk));
+  onElRemoved((el) => destroyTree(el));
+  onAttributesAdded((el, attrs) => {
+    directives(el, attrs).forEach((handle) => handle());
+  });
+  let outNestedComponents = (el) => !closestRoot(el.parentElement, true);
+  Array.from(document.querySelectorAll(allSelectors().join(","))).filter(outNestedComponents).forEach((el) => {
+    initTree(el);
+  });
+  dispatch(document, "alpine:initialized");
+  setTimeout(() => {
+    warnAboutMissingPlugins();
+  });
+}
+var rootSelectorCallbacks = [];
+var initSelectorCallbacks = [];
+function rootSelectors() {
+  return rootSelectorCallbacks.map((fn) => fn());
+}
+function allSelectors() {
+  return rootSelectorCallbacks.concat(initSelectorCallbacks).map((fn) => fn());
+}
+function addRootSelector(selectorCallback) {
+  rootSelectorCallbacks.push(selectorCallback);
+}
+function addInitSelector(selectorCallback) {
+  initSelectorCallbacks.push(selectorCallback);
+}
+function closestRoot(el, includeInitSelectors = false) {
+  return findClosest(el, (element) => {
+    const selectors = includeInitSelectors ? allSelectors() : rootSelectors();
+    if (selectors.some((selector) => element.matches(selector)))
+      return true;
+  });
+}
+function findClosest(el, callback) {
+  if (!el)
+    return;
+  if (callback(el))
+    return el;
+  if (el._x_teleportBack)
+    el = el._x_teleportBack;
+  if (!el.parentElement)
+    return;
+  return findClosest(el.parentElement, callback);
+}
+function isRoot(el) {
+  return rootSelectors().some((selector) => el.matches(selector));
+}
+var initInterceptors2 = [];
+function interceptInit(callback) {
+  initInterceptors2.push(callback);
+}
+function initTree(el, walker = walk, intercept = () => {
+}) {
+  deferHandlingDirectives(() => {
+    walker(el, (el2, skip) => {
+      intercept(el2, skip);
+      initInterceptors2.forEach((i) => i(el2, skip));
+      directives(el2, el2.attributes).forEach((handle) => handle());
+      el2._x_ignore && skip();
+    });
+  });
+}
+function destroyTree(root, walker = walk) {
+  walker(root, (el) => {
+    cleanupElement(el);
+    cleanupAttributes(el);
+  });
+}
+function warnAboutMissingPlugins() {
+  let pluginDirectives = [
+    ["ui", "dialog", ["[x-dialog], [x-popover]"]],
+    ["anchor", "anchor", ["[x-anchor]"]],
+    ["sort", "sort", ["[x-sort]"]]
+  ];
+  pluginDirectives.forEach(([plugin2, directive2, selectors]) => {
+    if (directiveExists(directive2))
+      return;
+    selectors.some((selector) => {
+      if (document.querySelector(selector)) {
+        warn(`found "${selector}", but missing ${plugin2} plugin`);
+        return true;
+      }
+    });
+  });
 }
 
 // packages/alpinejs/src/nextTick.js
@@ -2506,7 +2518,7 @@ window.Element.prototype._x_toggleAndCascadeWithTransitions = function(el, value
           let carry = Promise.all([
             el2._x_hidePromise,
             ...(el2._x_hideChildren || []).map(hideAfterChildren)
-          ]).then(([i]) => i());
+          ]).then(([i]) => i == null ? void 0 : i());
           delete el2._x_hidePromise;
           delete el2._x_hideChildren;
           return carry;
@@ -2723,7 +2735,7 @@ function bind(el, name, value, modifiers = []) {
   }
 }
 function bindInputValue(el, value) {
-  if (el.type === "radio") {
+  if (isRadio(el)) {
     if (el.attributes.value === void 0) {
       el.value = value;
     }
@@ -2734,7 +2746,7 @@ function bindInputValue(el, value) {
         el.checked = checkedAttrLooseCompare(el.value, value);
       }
     }
-  } else if (el.type === "checkbox") {
+  } else if (isCheckbox(el)) {
     if (Number.isInteger(value)) {
       el.value = value;
     } else if (!Array.isArray(value) && typeof value !== "boolean" && ![null, void 0].includes(value)) {
@@ -2810,34 +2822,37 @@ function safeParseBoolean(rawValue) {
   }
   return rawValue ? Boolean(rawValue) : null;
 }
+var booleanAttributes = /* @__PURE__ */ new Set([
+  "allowfullscreen",
+  "async",
+  "autofocus",
+  "autoplay",
+  "checked",
+  "controls",
+  "default",
+  "defer",
+  "disabled",
+  "formnovalidate",
+  "inert",
+  "ismap",
+  "itemscope",
+  "loop",
+  "multiple",
+  "muted",
+  "nomodule",
+  "novalidate",
+  "open",
+  "playsinline",
+  "readonly",
+  "required",
+  "reversed",
+  "selected",
+  "shadowrootclonable",
+  "shadowrootdelegatesfocus",
+  "shadowrootserializable"
+]);
 function isBooleanAttr(attrName) {
-  const booleanAttributes = [
-    "disabled",
-    "checked",
-    "required",
-    "readonly",
-    "open",
-    "selected",
-    "autofocus",
-    "itemscope",
-    "multiple",
-    "novalidate",
-    "allowfullscreen",
-    "allowpaymentrequest",
-    "formnovalidate",
-    "autoplay",
-    "controls",
-    "loop",
-    "muted",
-    "playsinline",
-    "default",
-    "ismap",
-    "reversed",
-    "async",
-    "defer",
-    "nomodule"
-  ];
-  return booleanAttributes.includes(attrName);
+  return booleanAttributes.has(attrName);
 }
 function attributeShouldntBePreservedIfFalsy(name) {
   return !["aria-pressed", "aria-checked", "aria-expanded", "aria-selected"].includes(name);
@@ -2869,6 +2884,12 @@ function getAttributeBinding(el, name, fallback) {
     return !![name, "true"].includes(attr);
   }
   return attr;
+}
+function isCheckbox(el) {
+  return el.type === "checkbox" || el.localName === "ui-checkbox" || el.localName === "ui-switch";
+}
+function isRadio(el) {
+  return el.type === "radio" || el.localName === "ui-radio";
 }
 
 // packages/alpinejs/src/utils/debounce.js
@@ -2948,10 +2969,10 @@ function store(name, value) {
     return stores[name];
   }
   stores[name] = value;
+  initInterceptors(stores[name]);
   if (typeof value === "object" && value !== null && value.hasOwnProperty("init") && typeof value.init === "function") {
     stores[name].init();
   }
-  initInterceptors2(stores[name]);
 }
 function getStores() {
   return stores;
@@ -3039,7 +3060,7 @@ var Alpine = {
   get raw() {
     return raw;
   },
-  version: "3.13.8",
+  version: "3.14.3",
   flushAndStopDeferringMutations,
   dontAutoEvaluateFunctions,
   disableEffectScheduling,
@@ -3117,10 +3138,16 @@ function generateEvaluator(el, expression, dataStack) {
   return (receiver = () => {
   }, { scope: scope2 = {}, params = [] } = {}) => {
     let completeScope = mergeProxies([scope2, ...dataStack]);
-    if (completeScope[expression] === void 0) {
-      throwExpressionError(el, expression);
-    }
-    runIfTypeOfFunction(receiver, completeScope[expression], completeScope, params);
+    let evaluatedExpression = expression.split(".").reduce(
+      (currentScope, currentExpression) => {
+        if (currentScope[currentExpression] === void 0) {
+          throwExpressionError(el, expression);
+        }
+        return currentScope[currentExpression];
+      },
+      completeScope
+    );
+    runIfTypeOfFunction(receiver, evaluatedExpression, completeScope, params);
   };
 }
 function throwExpressionError(el, expression) {
@@ -3310,8 +3337,10 @@ directive("teleport", (el, { modifiers, expression }, { cleanup }) => {
   };
   mutateDom(() => {
     placeInDom(clone2, target, modifiers);
-    initTree(clone2);
-    clone2._x_ignore = true;
+    skipDuringClone(() => {
+      initTree(clone2);
+      clone2._x_ignore = true;
+    })();
   });
   el._x_teleportPutBack = () => {
     let target2 = getTarget(expression);
@@ -3319,7 +3348,12 @@ directive("teleport", (el, { modifiers, expression }, { cleanup }) => {
       placeInDom(el._x_teleport, target2, modifiers);
     });
   };
-  cleanup(() => clone2.remove());
+  cleanup(
+    () => mutateDom(() => {
+      clone2.remove();
+      destroyTree(clone2);
+    })
+  );
 });
 var teleportContainerDuringClone = document.createElement("div");
 function getTarget(expression) {
@@ -3387,10 +3421,12 @@ function on(el, event, modifiers, callback) {
       e.stopPropagation();
       next(e);
     });
-  if (modifiers.includes("self"))
+  if (modifiers.includes("once")) {
     handler4 = wrapHandler(handler4, (next, e) => {
-      e.target === el && next(e);
+      next(e);
+      listenerTarget.removeEventListener(event, handler4, options);
     });
+  }
   if (modifiers.includes("away") || modifiers.includes("outside")) {
     listenerTarget = document;
     handler4 = wrapHandler(handler4, (next, e) => {
@@ -3405,20 +3441,18 @@ function on(el, event, modifiers, callback) {
       next(e);
     });
   }
-  if (modifiers.includes("once")) {
+  if (modifiers.includes("self"))
     handler4 = wrapHandler(handler4, (next, e) => {
-      next(e);
-      listenerTarget.removeEventListener(event, handler4, options);
+      e.target === el && next(e);
     });
-  }
-  handler4 = wrapHandler(handler4, (next, e) => {
-    if (isKeyEvent(event)) {
+  if (isKeyEvent(event) || isClickEvent(event)) {
+    handler4 = wrapHandler(handler4, (next, e) => {
       if (isListeningForASpecificKeyThatHasntBeenPressed(e, modifiers)) {
         return;
       }
-    }
-    next(e);
-  });
+      next(e);
+    });
+  }
   listenerTarget.addEventListener(event, handler4, options);
   return () => {
     listenerTarget.removeEventListener(event, handler4, options);
@@ -3443,9 +3477,12 @@ function kebabCase2(subject) {
 function isKeyEvent(event) {
   return ["keydown", "keyup"].includes(event);
 }
+function isClickEvent(event) {
+  return ["contextmenu", "click", "mouse"].some((i) => event.includes(i));
+}
 function isListeningForASpecificKeyThatHasntBeenPressed(e, modifiers) {
   let keyModifiers = modifiers.filter((i) => {
-    return !["window", "document", "prevent", "stop", "once", "capture"].includes(i);
+    return !["window", "document", "prevent", "stop", "once", "capture", "self", "away", "outside", "passive"].includes(i);
   });
   if (keyModifiers.includes("debounce")) {
     let debounceIndex = keyModifiers.indexOf("debounce");
@@ -3469,6 +3506,8 @@ function isListeningForASpecificKeyThatHasntBeenPressed(e, modifiers) {
       return e[`${modifier}Key`];
     });
     if (activelyPressedKeyModifiers.length === selectedSystemKeyModifiers.length) {
+      if (isClickEvent(e.type))
+        return false;
       if (keyToModifiers(e.key).includes(keyModifiers[0]))
         return false;
     }
@@ -3491,6 +3530,7 @@ function keyToModifiers(key) {
     "left": "arrow-left",
     "right": "arrow-right",
     "period": ".",
+    "comma": ",",
     "equal": "=",
     "minus": "-",
     "underscore": "_"
@@ -3547,7 +3587,7 @@ directive("model", (el, { modifiers, expression }, { effect: effect3, cleanup })
     setValue(getInputValue(el, modifiers, e, getValue()));
   });
   if (modifiers.includes("fill")) {
-    if ([void 0, null, ""].includes(getValue()) || el.type === "checkbox" && Array.isArray(getValue())) {
+    if ([void 0, null, ""].includes(getValue()) || isCheckbox(el) && Array.isArray(getValue()) || el.tagName.toLowerCase() === "select" && el.multiple) {
       setValue(
         getInputValue(el, modifiers, { target: el }, getValue())
       );
@@ -3559,7 +3599,7 @@ directive("model", (el, { modifiers, expression }, { effect: effect3, cleanup })
   cleanup(() => el._x_removeModelListeners["default"]());
   if (el.form) {
     let removeResetListener = on(el.form, "reset", [], (e) => {
-      nextTick(() => el._x_model && el._x_model.set(el.value));
+      nextTick(() => el._x_model && el._x_model.set(getInputValue(el, modifiers, { target: el }, getValue())));
     });
     cleanup(() => removeResetListener());
   }
@@ -3589,7 +3629,7 @@ function getInputValue(el, modifiers, event, currentValue) {
   return mutateDom(() => {
     if (event instanceof CustomEvent && event.detail !== void 0)
       return event.detail !== null && event.detail !== void 0 ? event.detail : event.target.value;
-    else if (el.type === "checkbox") {
+    else if (isCheckbox(el)) {
       if (Array.isArray(currentValue)) {
         let newValue = null;
         if (modifiers.includes("number")) {
@@ -3599,7 +3639,7 @@ function getInputValue(el, modifiers, event, currentValue) {
         } else {
           newValue = event.target.value;
         }
-        return event.target.checked ? currentValue.concat([newValue]) : currentValue.filter((el2) => !checkedAttrLooseCompare2(el2, newValue));
+        return event.target.checked ? currentValue.includes(newValue) ? currentValue : currentValue.concat([newValue]) : currentValue.filter((el2) => !checkedAttrLooseCompare2(el2, newValue));
       } else {
         return event.target.checked;
       }
@@ -3620,7 +3660,7 @@ function getInputValue(el, modifiers, event, currentValue) {
       });
     } else {
       let newValue;
-      if (el.type === "radio") {
+      if (isRadio(el)) {
         if (event.target.checked) {
           newValue = event.target.value;
         } else {
@@ -3742,22 +3782,20 @@ directive("data", (el, { expression }, { cleanup }) => {
     return;
   expression = expression === "" ? "{}" : expression;
   let magicContext = {};
-  let cleanup1 = injectMagics(magicContext, el).cleanup;
+  injectMagics(magicContext, el);
   let dataProviderContext = {};
   injectDataProviders(dataProviderContext, magicContext);
   let data2 = evaluate(el, expression, { scope: dataProviderContext });
   if (data2 === void 0 || data2 === true)
     data2 = {};
-  let cleanup2 = injectMagics(data2, el).cleanup;
+  injectMagics(data2, el);
   let reactiveData = reactive(data2);
-  initInterceptors2(reactiveData);
+  initInterceptors(reactiveData);
   let undo = addScopeToNode(el, reactiveData);
   reactiveData["init"] && evaluate(el, reactiveData["init"]);
   cleanup(() => {
     reactiveData["destroy"] && evaluate(el, reactiveData["destroy"]);
     undo();
-    cleanup1();
-    cleanup2();
   });
 });
 interceptClone((from, to) => {
@@ -3838,7 +3876,12 @@ directive("for", (el, { expression }, { effect: effect3, cleanup }) => {
   el._x_lookup = {};
   effect3(() => loop(el, iteratorNames, evaluateItems, evaluateKey));
   cleanup(() => {
-    Object.values(el._x_lookup).forEach((el2) => el2.remove());
+    Object.values(el._x_lookup).forEach((el2) => mutateDom(
+      () => {
+        destroyTree(el2);
+        el2.remove();
+      }
+    ));
     delete el._x_prevKeys;
     delete el._x_lookup;
   });
@@ -3907,11 +3950,12 @@ function loop(el, iteratorNames, evaluateItems, evaluateKey) {
     }
     for (let i = 0; i < removes.length; i++) {
       let key = removes[i];
-      if (!!lookup[key]._x_effects) {
-        lookup[key]._x_effects.forEach(dequeueJob);
-      }
-      lookup[key].remove();
-      lookup[key] = null;
+      if (!(key in lookup))
+        continue;
+      mutateDom(() => {
+        destroyTree(lookup[key]);
+        lookup[key].remove();
+      });
       delete lookup[key];
     }
     for (let i = 0; i < moves.length; i++) {
@@ -4036,12 +4080,10 @@ directive("if", (el, { expression }, { effect: effect3, cleanup }) => {
     });
     el._x_currentIfEl = clone2;
     el._x_undoIf = () => {
-      walk(clone2, (node) => {
-        if (!!node._x_effects) {
-          node._x_effects.forEach(dequeueJob);
-        }
+      mutateDom(() => {
+        destroyTree(clone2);
+        clone2.remove();
       });
-      clone2.remove();
       delete el._x_currentIfEl;
     };
     return clone2;
